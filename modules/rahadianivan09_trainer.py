@@ -1,15 +1,6 @@
 """
 Trainer module untuk Bank Marketing Deposit Prediction Pipeline
 rahadianivan09
-
-FIXES vs versi sebelumnya:
-- [FIX 1] steps_per_epoch=100 (was 50) → model lihat ~6400/8900 sampel per epoch
-- [FIX 2] class_weight={0:1.0, 1:7.0} → handle imbalance ~88% no / 12% yes
-- [FIX 3] Dropout setelah Dense ke-3 sebelum output layer
-- [FIX 4] L2 regularization di semua Dense layers
-- [FIX 5] hp extraction aman untuk dict maupun keras_tuner HyperParameters object
-- [FIX 6] Tuner objective ganti ke val_auc (lebih robust untuk imbalanced data)
-- [FIX 7] num_epochs=None di eval_dataset supaya tidak habis saat validation
 """
 
 import os
@@ -29,13 +20,8 @@ CATEGORICAL_FEATURES = [
 LABEL_KEY = 'deposit'
 EMBEDDING_DIM = 8
 
-# Bank Marketing UCI: ~88% no (0), ~12% yes (1)
-# class_weight supaya model tidak cheat ke majority class
-CLASS_WEIGHT = {0: 1.0, 1: 7.0}
+CLASS_WEIGHT = {0: 1.0, 1: 1.5}
 
-# Steps berdasarkan dataset size
-# ~8900 train / 64 batch = ~139 steps/epoch → pakai 100 (aman, cepat)
-# ~2200 eval  / 64 batch = ~34 steps       → pakai 25
 STEPS_PER_EPOCH = 100
 VALIDATION_STEPS = 25
 
@@ -62,12 +48,7 @@ def input_fn(file_pattern, tf_transform_output, num_epochs=None, batch_size=64):
 
 
 def _get_hp(hp, key, default):
-    """
-    FIX 5: Safely extract HP value dari dict ATAU keras_tuner HyperParameters object.
-    - Kalau hp=None       → pakai default
-    - Kalau hp=dict       → dict.get(key, default)
-    - Kalau hp=kt.HP obj  → hp.get(key), fallback ke default kalau KeyError
-    """
+    """Safely extract HP value dari dict atau keras_tuner HyperParameters object."""
     if hp is None:
         return default
     if isinstance(hp, dict):
@@ -85,7 +66,6 @@ def build_model(hp=None):
     dropout  = _get_hp(hp, 'dropout', 0.3)
     lr       = _get_hp(hp, 'learning_rate', 1e-3)
 
-    # FIX 4: L2 regularizer untuk semua Dense
     l2 = tf.keras.regularizers.l2(1e-4)
 
     # Numerical inputs
@@ -108,19 +88,16 @@ def build_model(hp=None):
     all_tensors = num_tensors + cat_tensors
     x = tf.keras.layers.Concatenate()(all_tensors)
 
-    # Layer 1
     x = tf.keras.layers.Dense(units_1, activation='relu', kernel_regularizer=l2)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.Dropout(dropout)(x)
 
-    # Layer 2
     x = tf.keras.layers.Dense(units_2, activation='relu', kernel_regularizer=l2)(x)
     x = tf.keras.layers.BatchNormalization()(x)
     x = tf.keras.layers.Dropout(dropout)(x)
 
-    # Layer 3 — FIX 3: tambah Dropout sebelum output
     x = tf.keras.layers.Dense(units_3, activation='relu', kernel_regularizer=l2)(x)
-    x = tf.keras.layers.Dropout(dropout / 2)(x)  # dropout lebih kecil di layer terakhir
+    x = tf.keras.layers.Dropout(dropout / 2)(x)
 
     output = tf.keras.layers.Dense(1, activation='sigmoid', name='output')(x)
 
@@ -153,7 +130,7 @@ def tuner_fn(fn_args: FnArgs):
     eval_dataset = input_fn(
         fn_args.eval_files,
         tf_transform_output=tf_transform_output,
-        num_epochs=None,  # FIX 7: None supaya tidak habis saat validation
+        num_epochs=None,
         batch_size=64
     )
 
@@ -166,7 +143,6 @@ def tuner_fn(fn_args: FnArgs):
             'learning_rate': hp.Choice('learning_rate', values=[1e-2, 1e-3, 1e-4])
         })
 
-    # FIX 6: objective=val_auc lebih robust untuk imbalanced data
     tuner = kt.RandomSearch(
         hypermodel=build_model_for_tuner,
         objective=kt.Objective('val_auc', direction='max'),
@@ -184,7 +160,7 @@ def tuner_fn(fn_args: FnArgs):
             'epochs': 5,
             'steps_per_epoch': STEPS_PER_EPOCH,
             'validation_steps': VALIDATION_STEPS,
-            'class_weight': CLASS_WEIGHT,   # FIX 2
+            'class_weight': CLASS_WEIGHT,
             'callbacks': [
                 tf.keras.callbacks.EarlyStopping(
                     monitor='val_auc',
@@ -222,11 +198,10 @@ def run_fn(fn_args: FnArgs):
     eval_dataset = input_fn(
         fn_args.eval_files,
         tf_transform_output=tf_transform_output,
-        num_epochs=None,  # FIX 7: None supaya tidak habis saat validation
+        num_epochs=None,
         batch_size=64
     )
 
-    # FIX 5: ekstraksi HP yang aman
     hp = fn_args.hyperparameters if fn_args.hyperparameters else None
     model = build_model(hp)
 
@@ -249,10 +224,10 @@ def run_fn(fn_args: FnArgs):
     model.fit(
         train_dataset,
         epochs=10,
-        steps_per_epoch=STEPS_PER_EPOCH,      # FIX 1: was 50, sekarang 100
+        steps_per_epoch=STEPS_PER_EPOCH,
         validation_data=eval_dataset,
-        validation_steps=VALIDATION_STEPS,     # FIX 1: was 20, sekarang 25
-        class_weight=CLASS_WEIGHT,             # FIX 2: handle imbalance
+        validation_steps=VALIDATION_STEPS,
+        class_weight=CLASS_WEIGHT,
         callbacks=callbacks,
         verbose=1
     )

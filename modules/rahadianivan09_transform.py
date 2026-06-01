@@ -18,7 +18,7 @@ def transformed_name(key):
 def preprocessing_fn(inputs):
     outputs = {}
 
-    # Label: sudah 0/1 dari preprocessing CSV
+    # Label: konversi ke int64
     outputs[transformed_name(LABEL_KEY)] = tf.cast(
         tf.reshape(inputs[LABEL_KEY], [-1]), tf.int64
     )
